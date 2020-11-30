@@ -61,6 +61,38 @@ def generalized_box_iou(boxes1, boxes2):
     return iou - (area - union) / area
 
 
+def box_cl_to_xx(box):
+    center, length = box.unbind(-1)
+    x = [(center - 0.5 * length), (center + 0.5 * length)]
+    return torch.stack(x, dim=-1)
+
+
+def box_iou_2d(boxes1, boxes2):
+    length1 = boxes1[:, 1] - boxes1[:, 0]
+    length2 = boxes2[:, 1] - boxes2[:, 0]
+
+    l = torch.max(boxes1[:, None, 0], boxes2[:, 0])  # [N,M]
+    r = torch.min(boxes1[:, None, 1], boxes2[:, 1])  # [N,M]
+
+    inter = (r - l).clamp(min=0)  # [N,M]
+
+    union = length1[:, None] + length2 - inter
+
+    iou = inter / union
+    return iou, union
+
+
+def generalized_box_iou_2d(boxes1, boxes2):
+    iou, union = box_iou_2d(boxes1, boxes2)
+
+    l = torch.min(boxes1[:, None, 0], boxes2[:, 0])  # [N,M]
+    r = torch.max(boxes1[:, None, 1], boxes2[:, 1])  # [N,M]
+
+    length = (r - l).clamp(min=0)  # [N,M]
+
+    return iou - (length - union) / length
+
+
 def masks_to_boxes(masks):
     """Compute the bounding boxes around the provided masks
 

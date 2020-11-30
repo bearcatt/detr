@@ -2,6 +2,7 @@
 """
 Train and eval functions used in main.py
 """
+import json
 import math
 import os
 import sys
@@ -12,6 +13,7 @@ import torch
 import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
+from util.misc import all_gather
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -60,7 +62,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    # print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -149,3 +151,44 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         stats['PQ_th'] = panoptic_res["Things"]
         stats['PQ_st'] = panoptic_res["Stuff"]
     return stats, coco_evaluator
+
+
+def evaluate3d(model, postprocessors, data_loader, device, epoch):
+    model.eval()
+    anet_results = []
+    video_ids = data_loader.dataset.video_idx
+    label2name = data_loader.dataset.label2name
+    root = data_loader.dataset.root
+
+    for samples, index in data_loader:
+        samples = samples.to(device)
+        sizes = (~samples.mask).float().sum(dim=-1, keepdim=True)
+
+        outputs = model(samples)
+        results = postprocessors['bbox'](outputs, sizes)
+
+        for idx, res in zip(index, results):
+            scores = res['scores']
+            labels = res['labels']
+            boxes = res['boxes']
+
+            new_res = []
+            for score, label, box in zip(scores, labels, boxes):
+                score = float(score.cpu().numpy())
+                label = label2name[int(label.cpu().numpy())]
+                box = [float(x) for x in list(box.cpu().numpy())]
+                new_res.append({'score': score, 'label': label, 'segment': box})
+            video_id = video_ids[idx]
+
+            anet_results.append({video_id: new_res})
+
+    all_results = all_gather(anet_results)
+
+    merged_results = {}
+    for p in all_results:
+        for item in p:
+            merged_results.update(item)
+
+    prediction_filename = os.path.join(root, 'predictions', f'prediction_{epoch}.json')
+    with open(prediction_filename, 'w') as f:
+        json.dump({'results': merged_results}, f)

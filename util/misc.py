@@ -295,6 +295,18 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
         for img, pad_img, m in zip(tensor_list, tensor, mask):
             pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
             m[: img.shape[1], :img.shape[2]] = False
+    elif tensor_list[0].ndim == 2:
+        # TODO handle 2d feature vector
+        max_size = _max_by_axis([list(feat.shape) for feat in tensor_list])
+        batch_shape = [len(tensor_list)] + max_size
+        b, t, d = batch_shape
+        dtype = tensor_list[0].dtype
+        device = tensor_list[0].device
+        tensor = torch.zeros(batch_shape, dtype=dtype, device=device)
+        mask = torch.ones((b, t), dtype=torch.bool, device=device)
+        for feat, pad_feat, m in zip(tensor_list, tensor, mask):
+            pad_feat[: feat.shape[0], : feat.shape[1]].copy_(feat)
+            m[: feat.shape[0]] = False
     else:
         raise ValueError('not supported')
     return NestedTensor(tensor, mask)

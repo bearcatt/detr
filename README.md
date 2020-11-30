@@ -261,3 +261,17 @@ DETR is released under the Apache 2.0 license. Please see the [LICENSE](LICENSE)
 
 # Contributing
 We actively welcome your pull requests! Please see [CONTRIBUTING.md](.github/CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for more info.
+
+# DETR Video
+```bash
+python -m torch.distributed.launch \
+  --nproc_per_node=2 \
+  --use_env main.py \
+  --anet_path datasets/data/ActivityNet/ \
+  --dataset_file anet \
+  --backbone noop \
+  --position_embedding 2dsine \
+  --transformer_type video \
+  --output_dir not_tracked_dir/tmp \
+  --eval
+```

@@ -109,11 +109,30 @@ class Joiner(nn.Sequential):
         return out, pos
 
 
+class VideoBackBone(nn.Sequential):
+    def __init__(self, position_embedding):
+        super().__init__(position_embedding)
+        self.num_channels = 2304
+
+    def forward(self, tensor_list: NestedTensor):
+        out: List[NestedTensor] = []
+        pos = []
+
+        out.append(tensor_list)
+        # position encoding
+        pos.append(self[0](tensor_list).to(tensor_list.tensors.dtype))
+        return out, pos
+
+
 def build_backbone(args):
     position_embedding = build_position_encoding(args)
-    train_backbone = args.lr_backbone > 0
-    return_interm_layers = args.masks
-    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
-    model = Joiner(backbone, position_embedding)
-    model.num_channels = backbone.num_channels
+
+    if args.backbone == 'noop':
+        model = VideoBackBone(position_embedding)
+    else:
+        return_interm_layers = args.masks
+        train_backbone = args.lr_backbone > 0
+        backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
+        model = Joiner(backbone, position_embedding)
+        model.num_channels = backbone.num_channels
     return model

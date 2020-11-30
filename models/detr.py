@@ -11,7 +11,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized)
 
-from .backbone import build_backbone
+from .backbone import build_backbone, Joiner, VideoBackBone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
@@ -20,7 +20,7 @@ from .transformer import build_transformer
 
 class DETR(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries, num_boundaries, aux_loss=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -35,9 +35,13 @@ class DETR(nn.Module):
         self.transformer = transformer
         hidden_dim = transformer.d_model
         self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, num_boundaries, 3)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
-        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+
+        if isinstance(backbone, Joiner):
+            self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        elif isinstance(backbone, VideoBackBone):
+            self.input_proj = nn.Linear(backbone.num_channels, hidden_dim)
         self.backbone = backbone
         self.aux_loss = aux_loss
 
@@ -155,9 +159,15 @@ class SetCriterion(nn.Module):
         losses = {}
         losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
-        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
-            box_ops.box_cxcywh_to_xyxy(src_boxes),
-            box_ops.box_cxcywh_to_xyxy(target_boxes)))
+        if src_boxes.size(-1) == 4:
+            loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes)))
+        elif src_boxes.size(-1) == 2:
+            loss_giou = 1 - torch.diag(box_ops.generalized_box_iou_2d(
+                box_ops.box_cl_to_xx(src_boxes),
+                box_ops.box_cl_to_xx(target_boxes)))
+
         losses['loss_giou'] = loss_giou.sum() / num_boxes
         return losses
 
@@ -286,6 +296,31 @@ class PostProcess(nn.Module):
         return results
 
 
+class PostProcess3d(nn.Module):
+    """ This module converts the model's output into the format expected by the coco api"""
+    @torch.no_grad()
+    def forward(self, outputs, target_sizes):
+        """ Perform the computation
+        Parameters:
+            outputs: raw outputs of the model
+            target_sizes: tensor of dimension [batch_size x 2] containing the size of each images of the batch
+                          For evaluation, this must be the original image size (before any data augmentation)
+                          For visualization, this should be the image size after data augment, but before padding
+        """
+        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
+
+        assert len(out_logits) == len(target_sizes)
+
+        prob = F.softmax(out_logits, -1)
+        scores, labels = prob[..., :-1].max(-1)
+
+        boxes = box_ops.box_cl_to_xx(out_bbox) * target_sizes.unsqueeze(1)
+
+        results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
+
+        return results
+
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -302,13 +337,18 @@ class MLP(nn.Module):
 
 
 def build(args):
-    num_classes = 20 if args.dataset_file != 'coco' else 91
-    if args.dataset_file == "coco_panoptic":
+    if args.dataset_file == "coco":
+        num_classes = 91
+        num_boundaries = 4
+    elif args.dataset_file == "coco_panoptic":
+        num_boundaries = 4
         num_classes = 250
+    elif args.dataset_file == "anet":
+        num_classes = 200
+        num_boundaries = 2
+
     device = torch.device(args.device)
-
     backbone = build_backbone(args)
-
     transformer = build_transformer(args)
 
     model = DETR(
@@ -316,6 +356,7 @@ def build(args):
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
+        num_boundaries=num_boundaries,
         aux_loss=args.aux_loss,
     )
     if args.masks:
@@ -339,7 +380,11 @@ def build(args):
     criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, losses=losses)
     criterion.to(device)
-    postprocessors = {'bbox': PostProcess()}
+    if 'coco' in args.dataset_file:
+        postprocessors = {'bbox': PostProcess()}
+    elif args.dataset_file == 'anet':
+        postprocessors = {'bbox': PostProcess3d()}
+
     if args.masks:
         postprocessors['segm'] = PostProcessSegm()
         if args.dataset_file == "coco_panoptic":

@@ -59,6 +59,26 @@ class Transformer(nn.Module):
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w)
 
 
+class Transformer2D(Transformer):
+    def __init__(self, **kargs):
+        super(Transformer2D, self).__init__( **kargs)
+
+    def forward(self, src, mask, query_embed, pos_embed):
+        # NxTxC to TxNxC
+        bs, t, d = src.shape
+        src = src.permute(1, 0, 2)
+        pos_embed = pos_embed.permute(1, 0, 2)
+        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+
+        tgt = torch.zeros_like(query_embed)
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                          pos=pos_embed, query_pos=query_embed)
+        # print(hs.shape) TODO
+
+        return hs.transpose(1, 2), memory.permute(1, 0, 2)
+
+
 class TransformerEncoder(nn.Module):
 
     def __init__(self, encoder_layer, num_layers, norm=None):
@@ -89,7 +109,7 @@ class TransformerDecoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
-        self.norm = norm
+        self.norm = norm # use the same normlayer to norm all intermediate outputs
         self.return_intermediate = return_intermediate
 
     def forward(self, tgt, memory,
@@ -274,16 +294,28 @@ def _get_clones(module, N):
 
 
 def build_transformer(args):
-    return Transformer(
-        d_model=args.hidden_dim,
-        dropout=args.dropout,
-        nhead=args.nheads,
-        dim_feedforward=args.dim_feedforward,
-        num_encoder_layers=args.enc_layers,
-        num_decoder_layers=args.dec_layers,
-        normalize_before=args.pre_norm,
-        return_intermediate_dec=True,
-    )
+    if args.transformer_type == 'image':
+        return Transformer(
+            d_model=args.hidden_dim,
+            dropout=args.dropout,
+            nhead=args.nheads,
+            dim_feedforward=args.dim_feedforward,
+            num_encoder_layers=args.enc_layers,
+            num_decoder_layers=args.dec_layers,
+            normalize_before=args.pre_norm,
+            return_intermediate_dec=True,
+        )
+    elif args.transformer_type == 'video':
+        return Transformer2D(
+            d_model=args.hidden_dim,
+            dropout=args.dropout,
+            nhead=args.nheads,
+            dim_feedforward=args.dim_feedforward,
+            num_encoder_layers=args.enc_layers,
+            num_decoder_layers=args.dec_layers,
+            normalize_before=args.pre_norm,
+            return_intermediate_dec=True,
+        )
 
 
 def _get_activation_fn(activation):

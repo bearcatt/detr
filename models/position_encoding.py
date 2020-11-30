@@ -76,6 +76,40 @@ class PositionEmbeddingLearned(nn.Module):
         return pos
 
 
+# TODO
+class PositionEmbeddingSine2D(nn.Module):
+    """This is exactly the positional embedding used in origianl Transformer paper
+    """
+    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
+        super().__init__()
+        self.num_pos_feats = num_pos_feats
+        self.temperature = temperature
+        self.normalize = normalize
+        if scale is not None and normalize is False:
+            raise ValueError("normalize should be True if scale is passed")
+        if scale is None:
+            scale = 2 * math.pi
+        self.scale = scale
+
+    def forward(self, tensor_list: NestedTensor):
+        x = tensor_list.tensors
+        mask = tensor_list.mask
+        assert mask is not None
+        not_mask = ~mask
+        p_embed = not_mask.cumsum(1, dtype=torch.float32) # B, T
+        if self.normalize:
+            eps = 1e-6
+            p_embed = p_embed / (p_embed[:, -1:] + eps) * self.scale
+
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+
+        pos = p_embed[:, :, None] / dim_t # B, T, C
+
+        pos = torch.stack((pos[:, :, 0::2].sin(), pos[:, :, 1::2].cos()), dim=3).flatten(2)
+        return pos # B, T, C
+
+
 def build_position_encoding(args):
     N_steps = args.hidden_dim // 2
     if args.position_embedding in ('v2', 'sine'):
@@ -83,6 +117,8 @@ def build_position_encoding(args):
         position_embedding = PositionEmbeddingSine(N_steps, normalize=True)
     elif args.position_embedding in ('v3', 'learned'):
         position_embedding = PositionEmbeddingLearned(N_steps)
+    elif args.position_embedding == '2dsine':
+        position_embedding = PositionEmbeddingSine2D(N_steps * 2, normalize=True)
     else:
         raise ValueError(f"not supported {args.position_embedding}")
 
